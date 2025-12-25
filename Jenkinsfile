@@ -28,12 +28,28 @@ pipeline {
 
         stage('Deploy to EC2') {
             steps {
-                sshagent(['ec2-ssh-key']) {
-                     bat "ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'pkill -f discovery-server || true'"
+                withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY')]) {
+                    powershell '''
+                        # 1. Fix Key Permissions
+                        $keyPath = $env:SSH_KEY
+                        $acl = Get-Acl $keyPath
+                        $acl.SetAccessRuleProtection($true, $false)
+                        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+                        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($currentUser, "FullControl", "Allow")
+                        $acl.SetAccessRule($rule)
+                        Set-Acl $keyPath $acl
 
-                     bat "ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'mkdir -p ${REMOTE_DIR}'"
-                     bat "scp -o StrictHostKeyChecking=no target/*.jar ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_DIR}/discovery-server.jar"
-                     bat "ssh -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} 'nohup java -jar ${REMOTE_DIR}/discovery-server.jar > ${REMOTE_DIR}/log.txt 2>&1 &'"
+                        # 2. Deployment Steps
+                        $remote = "$env:REMOTE_USER@$env:REMOTE_HOST"
+                        
+                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "pkill -f discovery-server; exit 0"
+                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "mkdir -p $env:REMOTE_DIR"
+                        
+                        $jarFile = Get-Item "target/*.jar"
+                        scp -i $keyPath -o StrictHostKeyChecking=no $jarFile $remote":"$env:REMOTE_DIR/discovery-server.jar
+                        
+                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "nohup java -jar $env:REMOTE_DIR/discovery-server.jar > $env:REMOTE_DIR/log.txt 2>&1 &"
+                    '''
                 }
             }
         }
