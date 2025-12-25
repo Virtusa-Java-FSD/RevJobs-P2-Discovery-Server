@@ -30,7 +30,11 @@ pipeline {
             steps {
                 withCredentials([sshUserPrivateKey(credentialsId: 'ec2-ssh-key', keyFileVariable: 'SSH_KEY')]) {
                     powershell '''
+                        $ErrorActionPreference = "Stop"
+                        Write-Host "--- Start Deployment ---"
+
                         # 1. Fix Key Permissions
+                        Write-Host "Fixing key permissions..."
                         $keyPath = $env:SSH_KEY
                         $acl = Get-Acl $keyPath
                         $acl.SetAccessRuleProtection($true, $false)
@@ -42,13 +46,27 @@ pipeline {
                         # 2. Deployment Steps
                         $remote = "$env:REMOTE_USER@$env:REMOTE_HOST"
                         
-                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "pkill -f discovery-server; exit 0"
-                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "mkdir -p $env:REMOTE_DIR"
+                        Write-Host "Stopping existing service on $remote..."
+                        # Added ConnectTimeout to fail fast if network is down
+                        ssh -i $keyPath -o StrictHostKeyChecking=no -o ConnectTimeout=10 $remote "pkill -f discovery-server; exit 0"
+                        Write-Host "Service stopped."
+
+                        Write-Host "Creating directory $env:REMOTE_DIR..."
+                        ssh -i $keyPath -o StrictHostKeyChecking=no -o ConnectTimeout=10 $remote "mkdir -p $env:REMOTE_DIR"
                         
-                        $jarFile = Get-Item "target/*.jar"
-                        scp -i $keyPath -o StrictHostKeyChecking=no $jarFile $remote":"$env:REMOTE_DIR/discovery-server.jar
+                        Write-Host "Uploading JAR..."
+                        $jarFiles = @(Get-Item "target/*.jar")
+                        $jarFile = $jarFiles[0]
+                        Write-Host "Found JAR: $jarFile"
+                        scp -i $keyPath -o StrictHostKeyChecking=no -o ConnectTimeout=10 $jarFile $remote":"$env:REMOTE_DIR/discovery-server.jar
+                        Write-Host "Upload complete."
                         
-                        ssh -i $keyPath -o StrictHostKeyChecking=no $remote "nohup java -jar $env:REMOTE_DIR/discovery-server.jar > $env:REMOTE_DIR/log.txt 2>&1 &"
+                        Write-Host "Starting service..."
+                        # Added sleep 2 to ensure nohup detaches before SSH closes
+                        ssh -i $keyPath -o StrictHostKeyChecking=no -o ConnectTimeout=10 $remote "nohup java -jar $env:REMOTE_DIR/discovery-server.jar > $env:REMOTE_DIR/log.txt 2>&1 & sleep 2"
+                        Write-Host "Service start command sent."
+                        
+                        Write-Host "--- Deployment Complete ---"
                     '''
                 }
             }
